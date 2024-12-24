@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>P2P Blockchain Wallet</title>
+    <script crossorigin src="https://unpkg.com/react@17/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@17/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/babel-standalone@6.26.0/babel.min.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+</head>
+<body>
+    <div id="root"></div>
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        function App() {
+            // 기본 상태 관리
+            const [balance, setBalance] = useState(1000.00000000);
+            const [amount, setAmount] = useState('');
+            const [address, setAddress] = useState('');
+            const [transactions, setTransactions] = useState([]);
+            const [isProcessing, setIsProcessing] = useState(false);
+            const [currentPrice, setCurrentPrice] = useState(0);
+
+            // 블록체인 전송을 위한 추가 상태
+            const [fromAddress, setFromAddress] = useState('');
+            const [toAddress, setToAddress] = useState('');
+            const [privateKey, setPrivateKey] = useState('');
+            const [btcAmount, setBtcAmount] = useState('');
+            
+            // WebSocket 연결
+            const ws = new WebSocket('ws://localhost:6001');
+
+            useEffect(() => {
+                // 비트코인 현재가 가져오기
+                const fetchBTCPrice = async () => {
+                    try {
+                        const response = await fetch('https://api.coindesk.com/v1/bpi/currentprice/BTC.json');
+                        const data = await response.json();
+                        setCurrentPrice(data.bpi.USD.rate_float);
+                    } catch (error) {
+                        console.error('Error fetching BTC price:', error);
+                    }
+                };
+
+                fetchBTCPrice();
+                const interval = setInterval(fetchBTCPrice, 60000); // 1분마다 갱신
+
+                return () => clearInterval(interval);
+            }, []);
+
+            const handleDeposit = async (e) => {
+                e.preventDefault();
+                setIsProcessing(true);
+                const value = parseFloat(amount);
+
+                try {
+                    if (value <= 0) throw new Error('Invalid amount');
+
+                    const transaction = {
+                        type: 'DEPOSIT',
+                        amount: value,
+                        timestamp: new Date().toISOString(),
+                        status: 'PENDING',
+                        txid: `TX-${Math.random().toString(36).substr(2, 9)}`
+                    };
+
+                    ws.send(JSON.stringify({
+                        type: 'TRANSACTION',
+                        data: transaction
+                    }));
+
+                    setBalance(prev => prev + value);
+                    setTransactions(prev => [transaction, ...prev]);
+                    setAmount('');
+                } catch (error) {
+                    console.error('Deposit error:', error);
+                    alert('Deposit failed: ' + error.message);
+                } finally {
+                    setIsProcessing(false);
+                }
+            };
+
+            const handleWithdraw = async (e) => {
+                e.preventDefault();
+                setIsProcessing(true);
+                const value = parseFloat(amount);
+
+                try {
+                    if (!address) throw new Error('Invalid BTC address');
+                    if (value <= 0 || value > balance) throw new Error('Invalid amount');
+
+                    const fee = 0.0001;
+                    const totalAmount = value + fee;
+
+                    if (totalAmount > balance) {
+                        throw new Error('Insufficient funds including fee');
+                    }
+
+                    const transaction = {
+                        type: 'WITHDRAW',
+                        amount: value,
+                        fee,
+                        address,
+                        timestamp: new Date().toISOString(),
+                        status: 'PENDING',
+                        txid: `TX-${Math.random().toString(36).substr(2, 9)}`
+                    };
+
+                    ws.send(JSON.stringify({
+                        type: 'TRANSACTION',
+                        data: {
+                            ...transaction,
+                            destinationAddress: address,
+                        }
+                    }));
+
+                    setBalance(prev => prev - totalAmount);
+                    setTransactions(prev => [transaction, ...prev]);
+                    setAmount('');
+                    setAddress('');
+                } catch (error) {
+                    console.error('Withdrawal error:', error);
+                    alert('Withdrawal failed: ' + error.message);
+                } finally {
+                    setIsProcessing(false);
+                }
+            };
+
+            const handleBlockchainTransfer = async (e) => {
+                e.preventDefault();
+                setIsProcessing(true);
+
+                try {
+                    if (!fromAddress || !toAddress || !privateKey || !btcAmount) {
+                        throw new Error('Please fill in all fields');
+                    }
+
+                    const amount = parseFloat(btcAmount);
+                    if (amount <= 0) throw new Error('Invalid amount');
+
+                    const transaction = {
+                        fromAddress,
+                        toAddress,
+                        amount,
+                        privateKey,
+                        timestamp: new Date().toISOString(),
+                    };
+
+                    ws.send(JSON.stringify({
+                        type: 'BLOCKCHAIN_TRANSACTION',
+                        data: transaction
+                    }));
+
+                    const txRecord = {
+                        type: 'BLOCKCHAIN_TRANSFER',
+                        amount,
+                        fee: 0.0001,
+                        fromAddress,
+                        toAddress,
+                        timestamp: new Date().toISOString(),
+                        status: 'PENDING',
+                        txid: `TX-${Math.random().toString(36).substr(2, 9)}`
+                    };
+
+                    setTransactions(prev => [txRecord, ...prev]);
+                    
+                    setFromAddress('');
+                    setToAddress('');
+                    setPrivateKey('');
+                    setBtcAmount('');
+                    
+                    alert('Transaction initiated. Check transaction history for status.');
+                } catch (error) {
+                    console.error('Blockchain transfer error:', error);
+                    alert('Transaction failed: ' + error.message);
+                } finally {
+                    setIsProcessing(false);
+                }
+            };
+
+            // WebSocket 이벤트 핸들러
+            useEffect(() => {
+                ws.onmessage = (event) => {
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'TRANSACTION_RESULT') {
+                        setTransactions(prev => 
+                            prev.map(tx => 
+                                tx.txid === data.txid 
+                                    ? { ...tx, status: 'COMPLETED' }
+                                    : tx
+                            )
+                        );
+                    }
+                };
+
+                ws.onerror = (error) => {
+                    console.error('WebSocket error:', error);
+                    alert('Connection error occurred');
+                };
+
+                return () => {
+                    ws.close();
+                };
+            }, []);
+
+            return (
+                <div className="p-8">
+                    <h1 className="text-3xl font-bold mb-6">Bitcoin Wallet</h1>
+                    
+                    <div className="bg-white rounded-lg shadow p-6 mb-6">
+                        <div className="flex justify-between items-center mb-4">
+                            <h2 className="text-xl font-bold">Balance: {balance.toFixed(8)} BTC</h2>
+                            <p className="text-gray-600">
+                                ≈ ${(balance * currentPrice).toFixed(2)} USD
+                            </p>
+                        </div>
+                        
+                        <div className="grid grid-cols-2 gap-4">
+                            {/* Deposit Form */}
+                            <form onSubmit={handleDeposit} className="p-4 border rounded">
+                                <h3 className="font-bold mb-4">Deposit</h3>
+                                <div className="mb-4">
+                                    <input
+                                        type="number"
+                                        step="0.00000001"
+                                        value={amount}
+                                        onChange={(e) => setAmount(e.target.value)}
+                                        placeholder="Amount in BTC"
+                                        className="w-full p-2 border rounded"
+                                        disabled={isProcessing}
+                                    />
+                                </div>
+                                <button
+                                    type="submit"
+                                    className="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600 disabled:opacity-50"
+                                    disabled={isProcessing}
+                                >
+                                    {isProcessing ? 'Processing...' : 'Deposit'}
+                                </button>
+                            </form>
+
+                            {/* Withdraw Form */}
+                            <form onSubmit={handleWithdraw} className="p-4 border rounded">
+                                <h3 className="font-bold mb-4">Withdraw</h3>
+                                <div className="mb-4">
+                                    <input
+                                        type="text"
+                                        value={address}
+                                        onChange={(e) => setAddress(e.target.value)}
+                                        placeholder="BTC Address"
+                                        className="w-full p-2 border rounded mb-2"
+                                        disabled={isProcessing}
+                                    />
+                                    <input
+                                        type="number"
+                                        step="0.00000001"
+                                        value={amount}
+                                        onChange={(e) => setAmount(e.target.value)}
+                                        placeholder="Amount in BTC"
+                                        className="w-full p-2 border rounded"
+                                        disabled={isProcessing}
+                                    />
+                                    {amount && (
+                                        <p className="text-sm text-gray-500 mt-1">
+                                            Fee: 0.0001 BTC
+                                        </p>
+                                    )}
+                                </div>
+                                <button
+                                    type="submit"
+                                    className="bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600 disabled:opacity-50"
+                                    disabled={isProcessing}
+                                >
+                                    {isProcessing ? 'Processing...' : 'Withdraw'}
+                                </button>
+                            </form>
+
+                            {/* Blockchain Transfer Form */}
+                            <form onSubmit={handleBlockchainTransfer} className="col-span-2 mt-4 p-4 border rounded bg-blue-50">
+                                <h3 className="font-bold mb-4 text-blue-800">Blockchain Transfer</h3>
+                                <div className="mb-4 space-y-3">
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                                            From BTC Address (Your Wallet)
+                                        </label>
+                                        <input
+                                            type="text"
+                                            value={fromAddress}
+                                            onChange={(e) => setFromAddress(e.target.value)}
+                                            placeholder="Your BTC Address"
+                                            className="w-full p-2 border rounded"
+                                            disabled={isProcessing}
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                                            Private Key
+                                        </label>
+                                        <input
+                                            type="password"
+                                            value={privateKey}
+                                            onChange={(e) => setPrivateKey(e.target.value)}
+                                            placeholder="Your Private Key"
+                                            className="w-full p-2 border rounded"
+                                            disabled={isProcessing}
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                                            To BTC Address
+                                        </label>
+                                        <input
+                                            type="text"
+                                            value={toAddress}
+                                            onChange={(e) => setToAddress(e.target.value)}
+                                            placeholder="Recipient's BTC Address"
+                                            className="w-full p-2 border rounded"
+                                            disabled={isProcessing}
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                                            Amount (BTC)
+                                        </label>
+                                        <input
+                                            type="number"
+                                            step="0.00000001"
+                                            value={btcAmount}
+                                            onChange={(e) => setBtcAmount(e.target.value)}
+                                            placeholder="0.00000000"
+                                            className="w-full p-2 border rounded"
+                                            disabled={isProcessing}
+                                        />
+                                        {btcAmount && (
+                                            <div className="mt-1 text-sm">
+                                                <p className="text-gray-600">Network Fee: 0.0001 BTC</p>
+                                                <p className="text-blue-600">
+                                                    ≈ ${(parseFloat(btcAmount) * currentPrice).toFixed(2)} USD
+                                                </p>
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                                <button
+                                    type="submit"
+                                    className="w-full bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:opacity-50"
+                                    disabled={isProcessing}
+                                >
+                                    {isProcessing ? 'Processing Transaction...' : 'Send BTC'}
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+
+                    {/* Transaction History */}
+                    <div className="bg-white rounded-lg shadow p-6">
+                        <h2 className="text-xl font-bold mb-4">Transaction History</h2>
+                        <div className="space-y-2">
+                            {transactions.map(tx => (
+                                <div key={tx.txid} className="flex justify-between border-b py-2">
+                                    <div>
+                                        <span className={tx.type === 'DEPOSIT' ? 'text-green-600' : 'text-red-600'}>
+                                            {tx.type}
+                                        </span>
+                                        {tx.address && <span className="ml-2 text-gray-500">To: {tx.address}</span>}
+                                        <span className="ml-2 text-xs text-gray-500">
+                                            {tx.txid}
+                                        </span>
+                                    </div>
+                                    <div className="text-right">
+                                        <div>
+                                            {tx.amount.toFixed(8)} BTC
+                                            {tx.fee && <span className="text-gray-500 text-sm ml-1">
+                                                + {tx.fee} BTC fee
+                                            </span>}
+                                        </div>
+                                        <div className="text-sm text-gray-500">
+                                            {new Date(tx.timestamp).toLocaleString()}
+                                        </div>
+                                        <div className={`text-sm ${
+                                            tx.status === 'COMPLETED' ? 'text-green-600' : 'text-yellow-600'
+                                        }`}>
+                                            {tx.status}
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+</body>
+</html>
